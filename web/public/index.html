@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Calculadora Microservicios</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233b5bdb'/%3E%3Ctext x='16' y='23' font-size='20' text-anchor='middle' fill='white'%3E%2B%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="estilos.css">
+</head>
+<body>
+  <header class="cabecera">
+    <h1>Calculadora</h1>
+    <p>Microservicios gRPC con historial en PostgreSQL</p>
+  </header>
+
+  <main class="contenedor">
+    <section class="tarjeta" aria-labelledby="titulo-calc">
+      <h2 id="titulo-calc">Calcular</h2>
+
+      <div class="display" role="status" aria-live="polite" aria-atomic="true">
+        <div id="resultado" class="display-resultado">0</div>
+        <div id="meta" class="display-meta">Aún no hay cálculos</div>
+      </div>
+
+      <div id="aviso" class="aviso" role="alert" hidden></div>
+
+      <form id="formulario" novalidate>
+        <div class="campos">
+          <label class="campo" for="entrada-a">
+            <span>Valor A</span>
+            <input id="entrada-a" type="number" step="any" inputmode="decimal" autocomplete="off" placeholder="0" required>
+          </label>
+          <label class="campo" id="campo-b" for="entrada-b">
+            <span>Valor B</span>
+            <input id="entrada-b" type="number" step="any" inputmode="decimal" autocomplete="off" placeholder="0" required>
+          </label>
+        </div>
+
+        <div class="operaciones" role="radiogroup" aria-label="Operación">
+          <button type="button" class="op" data-op="sumar" role="radio" aria-checked="true" aria-label="Sumar">+</button>
+          <button type="button" class="op" data-op="restar" role="radio" aria-checked="false" aria-label="Restar">&minus;</button>
+          <button type="button" class="op" data-op="multiplicar" role="radio" aria-checked="false" aria-label="Multiplicar">&times;</button>
+          <button type="button" class="op" data-op="dividir" role="radio" aria-checked="false" aria-label="Dividir">&divide;</button>
+          <button type="button" class="op" data-op="potencia" role="radio" aria-checked="false" aria-label="Potencia">x<sup>y</sup></button>
+          <button type="button" class="op" data-op="raizCuadrada" role="radio" aria-checked="false" aria-label="Raíz cuadrada">&radic;</button>
+        </div>
+
+        <button type="submit" id="boton-calcular" class="primario">Calcular</button>
+      </form>
+    </section>
+
+    <section class="tarjeta" aria-labelledby="titulo-hist">
+      <div class="hist-cabecera">
+        <h2 id="titulo-hist">Historial</h2>
+        <div class="acciones">
+          <button type="button" id="boton-actualizar" class="secundario">Actualizar</button>
+          <button type="button" id="boton-limpiar" class="peligro">Limpiar historial</button>
+        </div>
+      </div>
+
+      <div class="tabla-envoltura">
+        <table id="tabla" hidden>
+          <thead>
+            <tr>
+              <th scope="col">#</th>
+              <th scope="col">Operación</th>
+              <th scope="col">Resultado</th>
+              <th scope="col">Fecha</th>
+              <th scope="col"><span class="solo-lectores">Acciones</span></th>
+            </tr>
+          </thead>
+          <tbody id="cuerpo-tabla"></tbody>
+        </table>
+      </div>
+      <p id="vacio" class="vacio" hidden>Todavía no hay cálculos. Haz tu primera operación y aparecerá aquí.</p>
+    </section>
+  </main>
+
+  <footer class="pie">
+    <p class="pie-titulo">Arquitectura</p>
+    <ol class="flujo" aria-label="Flujo de una petición">
+      <li>Navegador</li>
+      <li>Web (Express)</li>
+      <li>wrapper</li>
+      <li>gRPC Calculadora</li>
+      <li>gRPC Historial</li>
+      <li>PostgreSQL</li>
+    </ol>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
