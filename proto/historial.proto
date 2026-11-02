@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package historial;
+
+// Servicio de persistencia del historial de operaciones (PostgreSQL).
+service Historial {
+  rpc Guardar (NuevoRegistro) returns (Registro);
+  rpc Listar (ListarRequest) returns (ListaRegistros);
+  rpc Obtener (IdRequest) returns (Registro);
+  rpc Eliminar (IdRequest) returns (EliminarResponse);
+  rpc Limpiar (Vacio) returns (LimpiarResponse);
+}
+
+// Datos para crear un registro
+message NuevoRegistro {
+  string operacion = 1;
+  double a = 2;
+  double b = 3;
+  bool tiene_b = 4;   // false en operaciones unarias (RaizCuadrada)
+  double resultado = 5;
+}
+
+// Registro persistido
+message Registro {
+  int32 id = 1;
+  string operacion = 2;
+  double a = 3;
+  double b = 4;
+  bool tiene_b = 5;
+  double resultado = 6;
+  string fecha = 7;   // ISO 8601
+}
+
+// limite <= 0 usa el valor por defecto del servicio
+message ListarRequest { int32 limite = 1; }
+message ListaRegistros { repeated Registro registros = 1; }
+message IdRequest { int32 id = 1; }
+message EliminarResponse { bool eliminado = 1; }
+message Vacio {}
+message LimpiarResponse { int32 eliminados = 1; }

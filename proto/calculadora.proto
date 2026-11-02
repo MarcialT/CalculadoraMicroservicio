@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package calculadora;
+
+// Servicio de operaciones matemáticas. Cada operación se guarda en el historial.
+service Calculadora {
+  rpc Sumar (Operandos) returns (Resultado);
+  rpc Restar (Operandos) returns (Resultado);
+  rpc Multiplicar (Operandos) returns (Resultado);
+  rpc Dividir (Operandos) returns (Resultado);
+  rpc Potencia (Operandos) returns (Resultado);
+  rpc RaizCuadrada (Operando) returns (Resultado);
+}
+
+// Dos operandos
+message Operandos { double a = 1; double b = 2; }
+
+// Un solo operando (raíz cuadrada)
+message Operando { double a = 1; }
+
+// Resultado de la operación ya registrada en el historial
+message Resultado {
+  int32 id = 1;
+  string operacion = 2;
+  double a = 3;
+  double b = 4;
+  bool tiene_b = 5;   // false en operaciones unarias (RaizCuadrada)
+  double resultado = 6;
+  string fecha = 7;   // ISO 8601
+}
