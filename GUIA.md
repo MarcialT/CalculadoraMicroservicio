@@ -11,6 +11,33 @@ Sistema distribuido en **Node.js + TypeScript** con **dos microservicios gRPC** 
 
 Regla de negocio clave: **no se responde un cálculo si no se persistió**. Si Historial cae, Calculadora responde `UNAVAILABLE` y la web `503`.
 
+### FAQ rápido
+
+**¿Dónde están los objetos de negocio?**
+
+| Capa | Dónde | Qué es |
+|------|-------|--------|
+| Contrato / dominio tipado | `wrapper/tipos.ts` + `proto/*.proto` | `Registro`, `Resultado`, `NuevoRegistro`, `Operacion`, `Operandos`, `Operando` |
+| Lógica de cálculo | `servicios/calculadora/operaciones.ts` | sumar, restar, dividir, etc. (sin I/O) |
+| Persistencia | `servicios/historial/repositorio.ts` + `db/init.sql` | tabla `operaciones` y acceso SQL |
+
+**¿Dónde se aplican los microservicios?**
+
+Son **2 servicios gRPC** (la web no es microservicio RPC):
+
+| Microservicio | Carpeta | Puerto | Rol |
+|---------------|---------|--------|-----|
+| Calculadora | `servicios/calculadora/` | `50051` | Opera y pide guardar |
+| Historial | `servicios/historial/` | `50052` | Dueño de la BD |
+
+Quién los consume: la **web** llama a ambos; **Calculadora** llama a Historial para persistir.
+
+**¿Dónde está el wrapper reutilizable?**
+
+Carpeta **`wrapper/`** (`CalculadoraClient`, `HistorialClient`, errores, carga de proto, tipos). Entrada: `wrapper/index.ts`.
+
+Lo reutilizan: `web/servidor.ts`, `servicios/calculadora/servidor.ts` (solo `HistorialClient`) y `scripts/e2e.ts`.
+
 ---
 
 ## Arquitectura y flujo
