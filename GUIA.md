@@ -1,114 +1,173 @@
 # Guía del proyecto — Calculadora con microservicios gRPC
 
-## Idea general
+## 1. Idea en una frase
 
-Sistema distribuido en **Node.js + TypeScript** con **dos microservicios gRPC** y una **web Express**.
-
-- **Calculadora** (`:50051`): hace las operaciones matemáticas.
-- **Historial** (`:50052`): guarda/consulta/borra en **PostgreSQL**. Es el **único** que toca la BD.
-- **Web** (`:3000`): UI + API HTTP/JSON. Habla gRPC solo vía el **wrapper**.
-- **Wrapper**: librería cliente reutilizable (`CalculadoraClient`, `HistorialClient`). La usan la web **y** el servicio Calculadora.
-
-Regla de negocio clave: **no se responde un cálculo si no se persistió**. Si Historial cae, Calculadora responde `UNAVAILABLE` y la web `503`.
-
-### FAQ rápido
-
-**¿Dónde están los objetos de negocio?**
-
-| Capa | Dónde | Qué es |
-|------|-------|--------|
-| Contrato / dominio tipado | `wrapper/tipos.ts` + `proto/*.proto` | `Registro`, `Resultado`, `NuevoRegistro`, `Operacion`, `Operandos`, `Operando` |
-| Lógica de cálculo | `servicios/calculadora/operaciones.ts` | sumar, restar, dividir, etc. (sin I/O) |
-| Persistencia | `servicios/historial/repositorio.ts` + `db/init.sql` | tabla `operaciones` y acceso SQL |
-
-**¿Dónde se aplican los microservicios?**
-
-Son **2 servicios gRPC** (la web no es microservicio RPC):
-
-| Microservicio | Carpeta | Puerto | Rol |
-|---------------|---------|--------|-----|
-| Calculadora | `servicios/calculadora/` | `50051` | Opera y pide guardar |
-| Historial | `servicios/historial/` | `50052` | Dueño de la BD |
-
-Quién los consume: la **web** llama a ambos; **Calculadora** llama a Historial para persistir.
-
-**¿Dónde está el wrapper reutilizable?**
-
-Carpeta **`wrapper/`** (`CalculadoraClient`, `HistorialClient`, errores, carga de proto, tipos). Entrada: `wrapper/index.ts`.
-
-Lo reutilizan: `web/servidor.ts`, `servicios/calculadora/servidor.ts` (solo `HistorialClient`) y `scripts/e2e.ts`.
-
----
-
-## Arquitectura y flujo
+Una **web HTTP** pide cálculos; un microservicio **Calculadora** (gRPC) los resuelve; otro microservicio **Historial** (gRPC) los guarda en **PostgreSQL**. Nadie habla gRPC “a pelo”: todos usan el **wrapper**. Regla clave: **si no se pudo guardar, no se responde el resultado**.
 
 ```
 Navegador
-   │ HTTP JSON
+   │  HTTP JSON
    ▼
-Web Express (:3000) ──wrapper/gRPC──► Calculadora (:50051) ──wrapper/gRPC──► Historial (:50052) ──SQL──► PostgreSQL
-        │                                                                              ▲
-        └────────────────────────── wrapper/gRPC (listar/obtener/eliminar/limpiar) ────┘
+Web Express (:3000 / WEB_PORT)
+   │  wrapper → gRPC
+   ▼
+Calculadora (:50051) ──wrapper/gRPC──► Historial (:50052) ──SQL──► PostgreSQL
+   ▲                                      ▲
+   │                                      │
+   └──── la web también lista/borra ──────┘
+         historial directo (mismo wrapper)
 ```
 
-### Flujo de un cálculo (`POST /api/calcular`)
-
-1. Web valida JSON → `CalculadoraClient.calcular(...)`.
-2. Calculadora ejecuta la operación en `operaciones.ts` (lógica pura).
-3. Calculadora llama `HistorialClient.guardar(...)`.
-4. Historial valida, hace `INSERT` y devuelve `Registro` con `id` + `fecha`.
-5. Calculadora responde `Resultado` (mismo shape que el registro).
-6. Web responde JSON al navegador.
-
-Si el deadline de `Guardar` vence pero el `INSERT` sí corrió, puede quedar un registro sin respuesta al usuario. Es aceptable: **nunca** hay respuesta sin persistencia.
-
-Credenciales gRPC: `createInsecure()` (solo local/demo). Bind por defecto `127.0.0.1` (`BIND_HOST`); usa `0.0.0.0` solo si otras máquinas deben conectar.
+| Pieza | Puerto | Qué es |
+|-------|--------|--------|
+| Calculadora | `50051` | Microservicio gRPC: math + pide guardar |
+| Historial | `50052` | Microservicio gRPC: dueño de la BD |
+| Web | `3000` | Express: UI + API JSON (no es microservicio RPC) |
+| Wrapper | — | Librería cliente reutilizable |
+| PostgreSQL | host `5434` → `5432` | Solo Historial la toca |
 
 ---
 
-## Tecnologías
+## 2. FAQ rápido
 
-| Pieza | Tecnología |
-|-------|------------|
-| Runtime | Node.js 24+, TypeScript, `tsx` |
-| RPC | gRPC (`@grpc/grpc-js` + `@grpc/proto-loader`) |
-| Web | Express 5 + estáticos en `web/public/` |
-| BD | PostgreSQL 16 (Docker), cliente `pg` |
-| Orquestación local | `concurrently`, `docker compose` |
-| Tests | Vitest (`test`), script `e2e` |
+### ¿Dónde están los objetos de negocio?
+
+En **`dominio/`** de cada servicio. Los `.proto` y `wrapper/tipos.ts` son **contrato/DTO** (transporte), no dominio.
+
+| Objeto | Archivo | Rol |
+|--------|---------|-----|
+| `Calculo` | `servicios/calculadora/dominio/calculo.ts` | Operación + operandos + `resolver()` + shapes de salida |
+| Math pura | `servicios/calculadora/operaciones.ts` | `sumar`, `dividir`, … sin red ni BD |
+| `RegistroOperacion` | `servicios/historial/dominio/registro.ts` | Validar y representar un registro |
+| Persistencia | `servicios/historial/repositorio.ts` | SQL; no decide reglas |
+
+### ¿Dónde se aplican los microservicios?
+
+Solo **dos** procesos gRPC: `servicios/calculadora` y `servicios/historial`. La web es fachada HTTP.
+
+### ¿Dónde está el wrapper?
+
+Carpeta **`wrapper/`**. Lo usan: web, Calculadora (solo `HistorialClient`) y `scripts/e2e.ts`.
+
+### ¿Se puede usar gRPC sin handler?
+
+**En el servidor, no.** El `.proto` dice *qué* se puede llamar; el **handler** es la función que se ejecuta *cuando* llega esa llamada. Sin handler registrado, el puerto escucha pero no atiende el RPC.
+
+El **cliente no tiene handlers**: solo invoca (`CalculadoraClient.sumar(2, 3)`).
 
 ---
 
-## Estructura
+## 3. gRPC en este proyecto (cómo funciona de verdad)
+
+### Piezas
+
+1. **`.proto`** — contrato: servicio, RPCs y mensajes.
+2. **Servidor** — `grpc.Server` + `addService(definición, handlers)`.
+3. **Handler** — por cada RPC: lee request → dominio/repo → `callback(null, respuesta)` o `callback({ code, details })`.
+4. **Cliente (wrapper)** — carga el mismo `.proto`, crea stub, llama con deadline, traduce errores.
+
+Todos los RPC aquí son **unarios**: 1 request → 1 response.
+
+### ¿Qué hace exactamente un handler?
+
+Ejemplo mental de `Sumar` en Calculadora:
 
 ```
-proto/                     contratos .proto (fuente de verdad del RPC)
-servicios/calculadora/     servidor gRPC + operaciones.ts + tests
-servicios/historial/       servidor gRPC + repositorio.ts + tests
-wrapper/                   clientes, carga de proto, errores, tipos
-web/                       Express + public/ (front)
-db/init.sql                CREATE TABLE operaciones
-docker-compose.yml         Postgres (puerto host 5434 → 5432)
-scripts/e2e.ts             punta a punta real
-.env.example               variables de entorno
+Cliente envía Operandos { a: 2, b: 3 }
+        │
+        ▼
+Handler crearHandler('sumar', historial):
+  1. Lee llamada.request.a / .b
+  2. new Calculo('sumar', 2, 3) → calculo.resolver()  // = 5
+  3. historial.guardar(...)                            // gRPC a Historial
+  4. callback(null, calculo.aResultado(id, fecha))     // OK
+     —o—
+     callback({ code: INVALID_ARGUMENT, details: '...' })  // error de negocio
+     callback({ code: UNAVAILABLE, details: '...' })       // Historial caído
+```
+
+En código se registran así:
+
+```ts
+for (const op of OPERACIONES_VALIDAS) handlers[op] = crearHandler(op, historial);
+server.addService(Servicio.service, handlers);
+```
+
+| Lado | ¿Handler? | Rol |
+|------|-----------|-----|
+| Servidor | **Sí, obligatorio** | Ejecuta la lógica al recibir el RPC |
+| Cliente / wrapper | No | Solo empaqueta, llama y espera |
+
+### Errores
+
+gRPC no usa HTTP 400/404. Usa **códigos**:
+
+| Código | Cuándo (en este repo) |
+|--------|------------------------|
+| `INVALID_ARGUMENT` | División entre 0, id inválido, JSON malo (en web → 400) |
+| `NOT_FOUND` | Registro inexistente |
+| `UNAVAILABLE` / `DEADLINE_EXCEEDED` | Historial caído o timeout |
+| `INTERNAL` | Bug / fallo de BD (mensaje genérico al cliente) |
+
+La web traduce esos códigos a HTTP con `estadoHttp()`.
+
+### Detalles técnicos útiles
+
+- Credenciales: `createInsecure()` (solo local/demo).
+- Bind: `BIND_HOST` default `127.0.0.1` (usa `0.0.0.0` solo si otras PCs deben conectar).
+- `proto-loader` con `keepCase: false` → `tiene_b` en proto llega como `tieneB` en JS.
+- Deadline del wrapper: **5 s** por defecto.
+
+---
+
+## 4. Flujo completo de un cálculo
+
+`POST /api/calcular` con `{ "operacion": "sumar", "a": 2, "b": 3 }`:
+
+1. **`web/public/app.js`** — `fetch('/api/calcular', …)`.
+2. **`web/servidor.ts`** — valida JSON → `calculadora.calcular('sumar', 2, 3)`.
+3. **`wrapper/calculadoraClient.ts`** — gRPC `Sumar` a `:50051`.
+4. **Handler Calculadora** — `Calculo` → `resolver()` → `HistorialClient.guardar(...)`.
+5. **Handler Historial** — `RegistroOperacion.desdeNuevo` → `repo.guardar` (INSERT) → `Registro` con `id` + `fecha`.
+6. Calculadora arma `Resultado` con ese `id`/`fecha` y responde.
+7. Web responde JSON al navegador; el front pinta resultado e historial.
+
+Si el paso 5 falla o vence el deadline: Calculadora → `UNAVAILABLE` → web → **503**. No hay resultado “huérfano” hacia el usuario (puede quedar un INSERT si el timeout llegó tarde; la regla es no responder sin persistir).
+
+---
+
+## 5. Mapa de carpetas
+
+```
+proto/                         contratos .proto
+servicios/calculadora/
+  dominio/calculo.ts           objeto de negocio
+  dominio/index.ts             reexporta dominio
+  operaciones.ts               math pura
+  servidor.ts                  handlers gRPC + arranque
+  *.test.ts                    pruebas
+servicios/historial/
+  dominio/registro.ts          objeto de negocio
+  dominio/index.ts
+  repositorio.ts               SQL con pg
+  servidor.ts                  handlers gRPC + arranque
+  *.test.ts
+wrapper/                       clientes + carga proto + errores + DTOs
+web/
+  servidor.ts                  Express API
+  public/app.js                UI del navegador
+  public/index.html, styles…
+db/init.sql                    CREATE TABLE
+docker-compose.yml             Postgres
+scripts/e2e.ts                 prueba punta a punta real
+.env.example                   variables
 ```
 
 ---
 
-## Qué es gRPC aquí (resumen práctico)
+## 6. Contratos `.proto`
 
-- Contratos en **Protocol Buffers** (`proto3`): definen **servicios**, **RPC** y **mensajes**.
-- Comunicación binaria HTTP/2; más tipada y eficiente que REST entre servicios.
-- Todos los RPC de este proyecto son **unarios** (1 request → 1 response).
-- Errores = **códigos de estado gRPC** (`INVALID_ARGUMENT`, `NOT_FOUND`, `UNAVAILABLE`, `INTERNAL`, `DEADLINE_EXCEEDED`…), no HTTP.
-- `proto-loader` carga `.proto` en runtime (`keepCase: false` → `tiene_b` llega como `tieneB` en JS).
-- Deadline por defecto del wrapper: **5 s**.
-
----
-
-## Contratos `.proto`
-
-### `proto/calculadora.proto` — paquete `calculadora`
+### `proto/calculadora.proto` (paquete `calculadora`)
 
 Servicio `Calculadora`:
 
@@ -117,124 +176,174 @@ Servicio `Calculadora`:
 | `Sumar`, `Restar`, `Multiplicar`, `Dividir`, `Potencia` | `Operandos { double a, b }` | `Resultado` |
 | `RaizCuadrada` | `Operando { double a }` | `Resultado` |
 
-```
-Resultado {
-  int32 id
-  string operacion
-  double a, b
-  bool tiene_b      # false en RaizCuadrada
-  double resultado
-  string fecha      # ISO 8601
-}
-```
+`Resultado`: `id`, `operacion`, `a`, `b`, `tiene_b`, `resultado`, `fecha` (ISO).  
+`id` y `fecha` **vienen de Historial**, no los inventa Calculadora.
 
-El `id` y la `fecha` **no** los inventa Calculadora: vienen de Historial tras `Guardar`.
-
-### `proto/historial.proto` — paquete `historial`
-
-Servicio `Historial`:
+### `proto/historial.proto` (paquete `historial`)
 
 | RPC | Request | Response |
 |-----|---------|----------|
-| `Guardar` | `NuevoRegistro { operacion, a, b, tiene_b, resultado }` | `Registro` |
-| `Listar` | `ListarRequest { int32 limite }` | `ListaRegistros { repeated Registro }` |
-| `Obtener` | `IdRequest { int32 id }` | `Registro` |
-| `Eliminar` | `IdRequest { int32 id }` | `EliminarResponse { bool eliminado }` |
-| `Limpiar` | `Vacio` | `LimpiarResponse { int32 eliminados }` |
+| `Guardar` | `NuevoRegistro` | `Registro` |
+| `Listar` | `ListarRequest { limite }` | `ListaRegistros` |
+| `Obtener` / `Eliminar` | `IdRequest { id }` | `Registro` / `{ eliminado }` |
+| `Limpiar` | `Vacio` | `{ eliminados }` |
 
-`Registro` tiene la misma forma que `Resultado`. `limite <= 0` → default del servicio (50). Máximo efectivo en repo: **500**.
-
----
-
-## Wrapper (`wrapper/`)
-
-Capa que **esconde** gRPC crudo detrás de API TypeScript.
-
-| Archivo | Rol |
-|---------|-----|
-| `cargarProto.ts` | Carga `.proto` y obtiene el constructor del servicio |
-| `llamarUnario.ts` | Promise + deadline + traducción de errores |
-| `errores.ts` | `CalculadoraError { codigo, codigoGrpc, message }` |
-| `tipos.ts` | `Operacion`, `Registro`, `NuevoRegistro`, `ID_MAXIMO` (int32) |
-| `calculadoraClient.ts` | Cliente: `sumar`, `restar`, …, `calcular`, `cerrar` |
-| `historialClient.ts` | Cliente: `guardar`, `listar`, `obtener`, `eliminar`, `limpiar` |
-| `index.ts` | Reexporta todo lo público |
-
-Operaciones válidas: `sumar | restar | multiplicar | dividir | potencia | raizCuadrada`.
-
-Quién lo usa:
-
-- **Web** → ambos clientes.
-- **Calculadora** → solo `HistorialClient` para persistir.
-
-Ejemplo:
-
-```ts
-import { CalculadoraClient, HistorialClient, CalculadoraError } from './wrapper/index.js';
-
-const calc = new CalculadoraClient({ host: 'localhost', port: 50051 });
-const hist = new HistorialClient();
-
-try {
-  const r = await calc.sumar(2, 3);       // { id, resultado: 5, fecha, ... }
-  const row = await hist.obtener(r.id);
-  await calc.dividir(1, 0);              // INVALID_ARGUMENT
-} catch (e) {
-  if (e instanceof CalculadoraError) console.error(e.codigo, e.message);
-} finally {
-  calc.cerrar();
-  hist.cerrar();
-}
-```
+`limite <= 0` → default 50 en repo. Tope efectivo: **500**.
 
 ---
 
-## Servicio Calculadora (`servicios/calculadora/`)
+## 7. Wrapper — archivo por archivo
 
-### `operaciones.ts` — lógica pura
+Capa que **esconde** gRPC crudo detrás de TypeScript legible.
 
-Valida números finitos; rechaza división por 0, raíz de negativo, desbordamiento (`Infinity`/`NaN`). Lanza `ErrorOperacion` → gRPC `INVALID_ARGUMENT`.
+### `wrapper/tipos.ts` — DTOs (no dominio)
 
-### `servidor.ts` — handlers gRPC
+| Export | Qué es |
+|--------|--------|
+| `OPERACIONES_VALIDAS` | Lista fija: sumar…raizCuadrada |
+| `Operacion` | Tipo unión de esos nombres |
+| `ID_MAXIMO` | `2147483647` (int32; protobufjs trunca si te pasas) |
+| `Registro` / `Resultado` | Shape persistido / respuesta de cálculo |
+| `NuevoRegistro` | Shape para `Guardar` (sin id/fecha) |
+| `OpcionesCliente` | `host`, `port`, `deadlineMs` |
 
-Por cada operación: **calcular → guardar en Historial → responder**.
+### `wrapper/cargarProto.ts`
 
-| Error | Código gRPC |
-|-------|-------------|
+| Función | Qué hace por dentro |
+|---------|---------------------|
+| `cargarPaquete(nombre)` | Resuelve `proto/`, `protoLoader.loadSync`, `grpc.loadPackageDefinition` |
+| `obtenerServicio(paquete, ns, nombre)` | Navega `paquete.calculadora.Calculadora` (o historial) y devuelve el constructor; si falta, lanza Error |
+
+### `wrapper/errores.ts`
+
+| Pieza | Qué hace |
+|-------|----------|
+| `CalculadoraError` | Error del wrapper: `codigo` (string), `codigoGrpc` (número), `message` |
+| `aCalculadoraError(err)` | Mapea `err.code` → nombre (`UNAVAILABLE`, …); suaviza mensajes tipo “No connection established” |
+
+### `wrapper/llamarUnario.ts`
+
+| Función | Qué hace |
+|---------|----------|
+| `llamarUnario(cliente, metodo, request, deadlineMs)` | Envuelve el callback de gRPC en `Promise`; pone `deadline: Date.now() + deadlineMs`; si falla → `aCalculadoraError` |
+
+### `wrapper/calculadoraClient.ts` — clase `CalculadoraClient`
+
+| Método | Interno |
+|--------|---------|
+| `constructor` | Lee `CALC_HOST`/`CALC_PORT`, carga proto, `createInsecure()` |
+| `llamar` (privado) | Delega a `llamarUnario` |
+| `sumar`…`raizCuadrada` | RPC homónimo |
+| `calcular(op, a, b?)` | Switch por nombre; exige `b` si no es raíz |
+| `cerrar` | `cliente.close()` |
+
+### `wrapper/historialClient.ts` — clase `HistorialClient`
+
+| Método | Interno |
+|--------|---------|
+| `guardar` | RPC `guardar` con `NuevoRegistro` |
+| `listar(limite)` | Valida rango → RPC → devuelve `registros[]` |
+| `obtener` / `eliminar` | `validarRango(id)` antes de enviar |
+| `limpiar` | RPC vacío → número de borrados |
+| `validarRango` | Entero 1…`ID_MAXIMO` o `INVALID_ARGUMENT` local |
+
+### `wrapper/index.ts`
+
+Reexporta lo público para un solo import: `from './wrapper/index.js'`.
+
+---
+
+## 8. Servicio Calculadora — archivo por archivo
+
+### `operaciones.ts` — math pura (sin I/O)
+
+| Pieza | Qué hace |
+|-------|----------|
+| `ErrorOperacion` | Error de negocio matemático |
+| `validar(valor, nombre)` | Assert: número finito |
+| `verificarResultado(n)` | Rechaza `Infinity`/`NaN` (desbordamiento) |
+| `sumar` / `restar` / `multiplicar` / `dividir` / `potencia` / `raizCuadrada` | Operan tras validar; dividir rechaza `b===0`; raíz rechaza `a<0` |
+| `OPERACIONES` | Mapa nombre → función |
+| `ejecutar(op, a, b?)` | Despacha por nombre; exige `b` si no es raíz |
+
+### `dominio/calculo.ts` — objeto de negocio `Calculo`
+
+| Pieza | Qué hace |
+|-------|----------|
+| `constructor(op, a, b?)` | Valida operación; marca `tieneB`; exige `b` en binarias |
+| `resolver()` | Llama `ejecutar` y guarda `_resultado` |
+| `resultado` / `resuelto` | Getter; falla si aún no resolviste |
+| `aNuevoRegistro()` | Payload para Historial |
+| `aResultado(id, fecha)` | Respuesta gRPC final |
+| `textoOperandos()` | Para logs (`"2, 3"` o `"9"`) |
+
+### `dominio/index.ts`
+
+Reexporta `Calculo` y lo útil de `operaciones`.
+
+### `servidor.ts` — handlers + proceso
+
+| Pieza | Qué hace |
+|-------|----------|
+| `nombreLog(op)` | Capitaliza para logs |
+| `crearHandler(op, historial)` | **El handler gRPC**: `Calculo` → `resolver` → `historial.guardar` → `callback` con éxito o códigos de error |
+| `iniciarServidorCalculadora(puerto, historial?, host?)` | Carga proto, registra handlers, `bindAsync`, devuelve `{ server, puerto }` |
+| Arranque (`import.meta.url`) | Lee `CALC_PORT`, crea `HistorialClient`, escucha, cierra limpio en SIGINT/SIGTERM |
+
+Tabla de errores del handler:
+
+| Excepción | Código gRPC |
+|-----------|-------------|
 | `ErrorOperacion` | `INVALID_ARGUMENT` |
-| Historial caído (`UNAVAILABLE` / `DEADLINE_EXCEEDED`) | `UNAVAILABLE` |
+| `CalculadoraError` UNAVAILABLE / DEADLINE | `UNAVAILABLE` |
 | Otro | `INTERNAL` |
 
-Puerto: `CALC_PORT` (default `50051`). Cierre ordenado con `SIGINT`/`SIGTERM`.
-
 ---
 
-## Servicio Historial (`servicios/historial/`)
+## 9. Servicio Historial — archivo por archivo
+
+### `dominio/registro.ts` — objeto de negocio `RegistroOperacion`
+
+| Pieza | Qué hace |
+|-------|----------|
+| `ErrorValidacionRegistro` | → se traduce a `INVALID_ARGUMENT` |
+| `desdeNuevo(nuevo)` | Valida y crea pendiente (`id`/`fecha` null); unaria → `b=0` |
+| `desdePersistido(dto)` | Rehidrata tras BD; valida id |
+| `validarNuevo` | Operación en lista + números finitos |
+| `validarId` | Entero `> 0` |
+| `persistido` | `id` y `fecha` no null |
+| `aNuevoRegistro()` | Payload INSERT |
+| `aRegistro()` | DTO completo (falla si no persistido) |
 
 ### `repositorio.ts` — único acceso a Postgres
 
-Tabla `operaciones`. Consultas **parametrizadas** (`$1`, `$2`…).
+| Pieza | Qué hace |
+|-------|----------|
+| `crearPool()` | `pg.Pool` desde `DB_HOST`, `DB_PORT` (5434), user/pass/db |
+| `filaARegistro(fila)` | `b NULL` → `b=0`, `tieneB=false`; fecha → ISO |
+| `RepositorioOperaciones.guardar` | `INSERT … RETURNING *` parametrizado; `tieneB=false` → `b=NULL` |
+| `listar(limite)` | Default 50, max 500, `ORDER BY id DESC` |
+| `obtener` / `eliminar` / `limpiar` | SELECT/DELETE por id o DELETE all |
 
-- `b NULL` en BD ↔ operación unaria (`tieneB: false`, `b: 0` en el mensaje).
-- Pool desde `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`.
+### `servidor.ts` — handlers + proceso
 
-### `servidor.ts` — handlers gRPC
+| Pieza | Qué hace |
+|-------|----------|
+| `errorGrpc(code, mensaje)` | Arma `ServiceError` |
+| `manejar(metodo, logica)` | Wrapper de handler: ejecuta lógica, loguea, traduce `ErrorValidacionRegistro` / `NOT_FOUND` / `INTERNAL` |
+| Handlers | `guardar` usa dominio+repo; `listar`/`obtener`/`eliminar`/`limpiar` delegan al repo tras validar |
+| `iniciarServidorHistorial` | Pool + proto + bind |
+| Arranque | `HIST_PORT`, cierre: `tryShutdown` + `pool.end()` |
 
-Valida operación, números e ids. Errores de BD **no** se filtran al cliente (solo log + `INTERNAL`).
-
-| Caso | Código |
-|------|--------|
-| Validación | `INVALID_ARGUMENT` |
-| Id inexistente | `NOT_FOUND` |
-| Fallo BD/interno | `INTERNAL` |
-
-Puerto: `HIST_PORT` (default `50052`).
+Errores de BD **no** se reenvían al cliente (solo log + `INTERNAL`).
 
 ---
 
-## Base de datos
+## 10. Base de datos
 
-`db/init.sql` (se monta al crear el contenedor):
+### `db/init.sql`
+
+Se monta al **crear** el contenedor (`docker-entrypoint-initdb.d`):
 
 ```sql
 CREATE TABLE IF NOT EXISTS operaciones (
@@ -247,95 +356,124 @@ CREATE TABLE IF NOT EXISTS operaciones (
 );
 ```
 
-Docker: imagen `postgres:16-alpine`, volumen persistente, healthcheck, puerto **host `5434`** → contenedor `5432` (solo `127.0.0.1`). Password default `calculadora` = solo desarrollo.
+### `docker-compose.yml`
+
+- Imagen `postgres:16-alpine`, volumen persistente, healthcheck.
+- Puerto host **`5434`** → `5432` solo en `127.0.0.1`.
+- Password default `calculadora` = solo desarrollo.
 
 ---
 
-## Web (`web/servidor.ts`)
+## 11. Web — archivo por archivo
 
-Express sirve `public/` y expone API. No usa gRPC directo: solo wrapper.
+### `web/servidor.ts`
 
-| Método | Ruta | Qué hace |
-|--------|------|----------|
-| `POST` | `/api/calcular` | `{ operacion, a, b? }` → Calculadora |
-| `GET` | `/api/historial?limite=n` | Lista (default 50) |
-| `GET` | `/api/historial/:id` | Un registro |
-| `DELETE` | `/api/historial/:id` | Borra uno |
-| `DELETE` | `/api/historial` | Vacía todo |
-| `GET` | `/api/salud` | `{ ok: true }` |
+| Pieza | Qué hace |
+|-------|----------|
+| `estadoHttp(codigo)` | gRPC/string → 400/404/503/500 |
+| `ErrorValidacion` | Input HTTP malo → 400 |
+| `esNumeroFinito` | Type guard |
+| `leerId(req)` | Solo dígitos, 1…`ID_MAXIMO` (rechaza `1e3`, `0x10`) |
+| `crearApp(calc, hist)` | Rutas API + estáticos + middleware de errores (sin stack traces) |
+| Arranque | `WEB_PORT`, construye ambos clientes wrapper, cierra conexiones al salir |
 
-Mapeo errores → HTTP:
+| Ruta | Acción |
+|------|--------|
+| `POST /api/calcular` | Valida → `calculadora.calcular` |
+| `GET /api/historial` | `historial.listar` (default 50) |
+| `GET/DELETE /api/historial/:id` | obtener / eliminar |
+| `DELETE /api/historial` | limpiar |
+| `GET /api/salud` | `{ ok: true }` |
 
-| Código gRPC / validación | HTTP |
-|--------------------------|------|
-| `INVALID_ARGUMENT` / JSON malo | 400 |
-| `NOT_FOUND` | 404 |
-| `UNAVAILABLE` / `DEADLINE_EXCEEDED` | 503 |
-| Otro | 500 |
+### `web/public/app.js` (front)
 
-Validaciones extra: ids solo dígitos (rechaza `1e3`, `0x10`), rango hasta `ID_MAXIMO` (int32). No se exponen stack traces.
+| Función | Rol |
+|---------|-----|
+| `api(ruta, opciones)` | `fetch` + parse JSON + error legible (503 destacado) |
+| `seleccionarOperacion` | Cambia op; oculta campo B en raíz |
+| `formatearNumero` / `describirOperacion` | UI legible |
+| Submit del form | `POST /api/calcular` + refresca tabla |
+| Carga/borrado historial | Llama a las rutas DELETE/GET del API |
 
----
-
-## Variables de entorno (`.env`)
-
-| Variable | Default | Uso |
-|----------|---------|-----|
-| `DB_*` | localhost / 5434 / calculadora | Postgres |
-| `CALC_HOST` / `CALC_PORT` | localhost / 50051 | Cliente → Calculadora |
-| `HIST_HOST` / `HIST_PORT` | localhost / 50052 | Cliente → Historial |
-| `WEB_PORT` | 3000 | Express |
-| `BIND_HOST` | 127.0.0.1 | Interfaz de escucha gRPC |
+No conoce gRPC: solo HTTP al Express.
 
 ---
 
-## Cómo correrlo
+## 12. Scripts y config
 
-Requisitos: **Node.js 24+**, **Docker**.
+| Archivo | Rol |
+|---------|-----|
+| `scripts/e2e.ts` | Contra stack real: wrapper + web + SQL; registra ids y limpia solo esos; exit 1 si falla |
+| `package.json` | `pnpm start` = concurrently historial+calculadora+web; `db:up`/`db:down`; `test`; `e2e` |
+| `vitest.config.ts` | Runner de tests |
+| `.env` / `.env.example` | `DB_*`, `CALC_*`, `HIST_*`, `WEB_PORT`, `BIND_HOST` |
+| `pnpm-workspace.yaml` | Aprueba builds de `esbuild` / `protobufjs` |
+| `.npmrc` | `verify-deps-before-run=false`, permite builds locales |
+
+---
+
+## 13. Cómo correrlo
+
+Requisitos: **Node 24+**, **Docker Desktop**.
 
 ```bash
 pnpm install
 copy .env.example .env
-pnpm run db:up          # Postgres + init.sql
-pnpm start              # historial + calculadora + web
+pnpm run db:up
+pnpm start
 ```
 
-Abrir http://localhost:3000 (o el `WEB_PORT` de tu `.env`).
+Abrir http://localhost:3000 (o tu `WEB_PORT`; si 3000 ocupado → `WEB_PORT=3001`).
 
-Por separado: `pnpm run historial` | `calculadora` | `web`. Bajar BD: `pnpm run db:down`.
-
-Orden recomendado: **Historial → Calculadora → Web** (Calculadora depende de Historial para persistir).
-
----
-
-## Pruebas
+Orden si arrancas aparte: **Historial → Calculadora → Web**.
 
 ```bash
-pnpm run typecheck   # tsc --noEmit
-pnpm test            # unitarias + integración (vitest)
-pnpm run e2e         # contra servicios reales (requiere stack arriba)
+pnpm run typecheck
+pnpm test
+pnpm run e2e          # con el stack arriba
 ```
 
-- Con BD abajo, tests de repositorio/historial se **omitirán**; el resto corre.
-- `e2e` valida wrapper + web + Postgres, limpia solo lo que creó, exit `1` si falla.
+Si `ERR_PNPM_IGNORED_BUILDS`:
+
+```bash
+pnpm rebuild esbuild protobufjs
+pnpm install
+```
 
 ---
 
-## Cumplimiento de requisitos (mapa rápido)
+## 14. Desacoplamiento (qué sí / qué no)
+
+| Separación | Estado |
+|------------|--------|
+| Calculadora ↔ Historial | Solo red gRPC + wrapper |
+| Web ↔ servicios | Solo wrapper |
+| BD | Solo Historial (`pg`) |
+| Dominio ↔ transporte | `dominio/` vs proto/tipos |
+| Math | Sin I/O |
+
+Acoplamientos normales: mismo contrato proto; Calculadora depende de Historial para persistir (regla de negocio).
+
+---
+
+## 15. Cumplimiento de requisitos
 
 | Requisito | Dónde |
 |-----------|-------|
 | Dos servicios RPC | `servicios/calculadora`, `servicios/historial` |
-| Datos ida/vuelta + errores gRPC | `proto/*`, handlers, `wrapper/errores.ts` |
-| BD solo en servidor | `historial/repositorio.ts` (nadie más usa `pg`) |
-| Wrapper reutilizado | Web + Calculadora importan `wrapper/` |
+| Objetos de negocio | `Calculo`, `RegistroOperacion` |
+| Ida/vuelta + errores gRPC | proto + handlers + `wrapper/errores.ts` |
+| BD solo en servidor | `historial/repositorio.ts` |
+| Wrapper reutilizado | Web + Calculadora |
 
 ---
 
-## Checklist mental del sistema
+## 16. Checklist mental
 
-1. Contratos viven en `proto/` — cambias RPC ahí primero.
-2. Historial es dueño de la persistencia; Calculadora no conoce SQL.
-3. Wrapper unifica clientes y errores para todos los consumidores.
-4. Web es fachada HTTP; el “cerebro distribuido” es gRPC entre servicios.
-5. Sin Historial disponible → no hay resultado de cálculo al cliente.
+1. Cambias un RPC → empiezas en `proto/`.
+2. Reglas → `dominio/`; handlers solo orquestan.
+3. Historial dueño de SQL; Calculadora no conoce tablas.
+4. Wrapper = única forma de hablar gRPC desde consumidores.
+5. Web = HTTP; el “cerebro” distribuido es gRPC.
+6. Sin Historial → no hay resultado de cálculo al cliente.
+7. Sin handler en el server → el RPC no existe en la práctica.
