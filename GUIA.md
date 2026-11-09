@@ -22,13 +22,13 @@ pnpm run db:up
 pnpm start
 ```
 
-Abrir: http://localhost:3000
+Abrir: http://localhost:3001 (si 3000 está ocupado, usa `WEB_PORT` en `.env`)
 
 ## Puertos
 
 | Servicio     | Puerto |
 |--------------|--------|
-| Web          | 3000   |
+| Web          | 3001   |
 | Calculadora  | 50051  |
 | Historial    | 50052  |
 | PostgreSQL   | Docker |
